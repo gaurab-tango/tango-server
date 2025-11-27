@@ -44,9 +44,9 @@ router.post("/daily-report", async (req, res): Promise<any> => {
   try {
     await dbConnect();
 
-   // const DATE = new Date();
+    const DATE = new Date();
     // const DATE = new Date(2025,9,23); // Fixed date for testing
-    const DATE = new Date(2025, 10, 26);
+   // const DATE = new Date(2025, 10, 26);
     // Add 5 hours 30 minutes to get IST
     // const istOffsetMs = 5.5 * 60 * 60 * 1000; // 19800000 ms
     // const istDate = new Date(DATE.getTime() + istOffsetMs);
