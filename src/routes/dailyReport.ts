@@ -39,27 +39,16 @@ router.get("/latest-report", async (req, res): Promise<any> => {
       });
   }
 });
-
 router.post("/daily-report", async (req, res): Promise<any> => {
   try {
     await dbConnect();
 
-   const DATE = new Date();
-   // const DATE = new Date(2025, 11, 16); //dec 16
- // Fixed date for testing
-   // const DATE = new Date(2025, 10, 26);
-    // Add 5 hours 30 minutes to get IST
-    // const istOffsetMs = 5.5 * 60 * 60 * 1000; // 19800000 ms
-    // const istDate = new Date(DATE.getTime() + istOffsetMs);
-    const day = DATE.getUTCDate();           
-    const month = DATE.getUTCMonth() + 1;    
-    const year = DATE.getUTCFullYear();  
-    
-    // const day = DATE.getDate();
-    // const month = DATE.getMonth() + 1;
-    // const year = DATE.getFullYear();
+    const DATE = new Date();
 
-    // Check if a report for today already exists
+    const day = DATE.getUTCDate();
+    const month = DATE.getUTCMonth() + 1;
+    const year = DATE.getUTCFullYear();
+
     const alreadyExists = await DailyReport.findOne({ day, month, year });
 
     if (alreadyExists) {
@@ -86,6 +75,7 @@ router.post("/daily-report", async (req, res): Promise<any> => {
       restaurantSale: req.body.restaurantSale,
       mealPlanSale: req.body.mealPlanSale,
       barSale: req.body.barSale,
+      spaSale: req.body.spaSale, // ✅ NEW FIELD
       mealPlanPax: req.body.mealPlanPax,
       roomsUpgraded: req.body.roomsUpgraded,
       roomHalfDay: req.body.roomHalfDay,
@@ -100,6 +90,7 @@ router.post("/daily-report", async (req, res): Promise<any> => {
       cashReceived: req.body.cashReceived,
       submittedBy: req.body.submittedBy,
     });
+
     await newEntry.save();
 
     const daily = req.body;
@@ -126,19 +117,22 @@ router.post("/daily-report", async (req, res): Promise<any> => {
       existingSummary.totalRestaurantSale += daily.restaurantSale;
       existingSummary.totalMealPlanSale += daily.mealPlanSale;
       existingSummary.totalBarSale += daily.barSale;
+      existingSummary.totalSpa += daily.spaSale; // ✅ NEW FIELD
       existingSummary.totalCld += daily.cld;
       existingSummary.totalCake += daily.cake;
       existingSummary.totalExpense += daily.expense;
       existingSummary.totalCashDeposit += daily.cashDeposit;
-      // ✅ Only add pettyCash if it's positive
+
       if (daily.pettyCash > 0) {
         existingSummary.totalPettyCash += daily.pettyCash;
       }
-      existingSummary.totalUpiDeposit+=daily.upiDeposit;
-      existingSummary.totalCashReceived+=daily.cashReceived;
+
+      existingSummary.totalUpiDeposit += daily.upiDeposit;
+      existingSummary.totalCashReceived += daily.cashReceived;
       existingSummary.totalMonthRevenue += daily.totalRevenue;
-      existingSummary.totalAdult+=daily.totalAdultPax;
-      existingSummary.totalChild+=daily.totalChildPax;
+      existingSummary.totalAdult += daily.totalAdultPax;
+      existingSummary.totalChild += daily.totalChildPax;
+
       await existingSummary.save();
     } else {
       const initialDayCount = 1;
@@ -156,6 +150,7 @@ router.post("/daily-report", async (req, res): Promise<any> => {
         totalRestaurantSale: daily.restaurantSale,
         totalMealPlanSale: daily.mealPlanSale,
         totalBarSale: daily.barSale,
+        totalSpa: daily.spaSale, // ✅ NEW FIELD
         totalCld: daily.cld,
         totalCake: daily.cake,
         totalExpense: daily.expense,
@@ -165,7 +160,7 @@ router.post("/daily-report", async (req, res): Promise<any> => {
         totalCashReceived: daily.cashReceived,
         totalMonthRevenue: daily.totalRevenue,
         totalAdult: daily.totalAdultPax,
-        totalChild: daily.totalChildPax
+        totalChild: daily.totalChildPax,
       });
 
       await newSummary.save();
@@ -179,5 +174,6 @@ router.post("/daily-report", async (req, res): Promise<any> => {
     });
   }
 });
+
 
 export default router;
