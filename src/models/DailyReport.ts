@@ -7,7 +7,8 @@ export interface IDailyReport extends Document {
   year: number;
   roomSold: number;
   occupancyPercentage:number;
-  totalPax:number;
+  totalAdultPax:number;
+  totalChildPax:number;
   expectedArrival:number;
   stayOver:number;
   noShow:number;
@@ -29,6 +30,7 @@ export interface IDailyReport extends Document {
   totalRevenue:number;  
   upiDeposit:number;  
   cashReceived:number;  
+  spaSale:number;
   submittedBy: mongoose.Types.ObjectId;
 }
 
@@ -62,6 +64,7 @@ const DailyReportSchema: Schema = new Schema({
   totalRevenue:{ type: Number, required: true },
   upiDeposit:{ type: Number, required: true },
   cashReceived:{ type: Number, required: true },
+  spaSale:{ type: Number, required: true },
   submittedBy: { type: String, required: true },
 });
 
