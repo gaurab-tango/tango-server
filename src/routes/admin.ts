@@ -33,12 +33,10 @@ router.get("/latest-report", async (req, res): Promise<any> => {
 
     res.status(200).json(lastEntry);
   } catch (error) {
-    res
-      .status(500)
-      .json({
-        error: "Internal Server Error",
-        details: (error as Error).message,
-      });
+    res.status(500).json({
+      error: "Internal Server Error",
+      details: (error as Error).message,
+    });
   }
 });
 
@@ -56,12 +54,10 @@ router.get("/latest-month-summary", async (req, res): Promise<any> => {
 
     res.status(200).json(latestSummary);
   } catch (error) {
-    res
-      .status(500)
-      .json({
-        error: "Internal Server Error",
-        details: (error as Error).message,
-      });
+    res.status(500).json({
+      error: "Internal Server Error",
+      details: (error as Error).message,
+    });
   }
 });
 
@@ -88,21 +84,15 @@ router.get("/month-summary/:year/:month", async (req, res): Promise<any> => {
 
     res.status(200).json(summary);
   } catch (error) {
-    res
-      .status(500)
-      .json({
-        error: "Internal Server Error",
-        details: (error as Error).message,
-      });
+    res.status(500).json({
+      error: "Internal Server Error",
+      details: (error as Error).message,
+    });
   }
 });
 
-
-
-
-
-
-router.get("/month-daily-reports/:year/:month",
+router.get(
+  "/month-daily-reports/:year/:month",
   async (req, res): Promise<any> => {
     const { year, month } = req.params;
 
@@ -117,71 +107,77 @@ router.get("/month-daily-reports/:year/:month",
         .lean(); // Sort by ascending date
 
       if (dailyReports.length === 0) {
-        return res
-          .status(404)
-          .json({
-            message: "No daily reports found for the given month and year.",
-          });
+        return res.status(404).json({
+          message: "No daily reports found for the given month and year.",
+        });
       }
 
       res.status(200).json(dailyReports);
     } catch (error) {
-      res
-        .status(500)
-        .json({
-          error: "Internal Server Error",
-          details: (error as Error).message,
-        });
+      res.status(500).json({
+        error: "Internal Server Error",
+        details: (error as Error).message,
+      });
     }
-  }
+  },
 );
 
-
-router.get("/custom-range-summary", async (req, res): Promise<any> => {
+router.get("/date-range-summary", async (req, res): Promise<any> => {
   try {
-    const { startMonth, startYear, endMonth, endYear } = req.query;
+    const { startDate, endDate } = req.query;
 
-    if (!startMonth || !startYear || !endMonth || !endYear) {
+    if (!startDate || !endDate) {
       return res.status(400).json({
-        message: "Please provide startMonth, startYear, endMonth, and endYear.",
+        message: "Please provide startDate and endDate (e.g., YYYY-MM-DD).",
       });
     }
 
-    await dbConnect();
+    // await dbConnect(); // Uncomment if you are handling connections here
 
-    // Convert inputs to comparable integers (YYYYMM)
-    // Example: Sept 2025 -> 202509
-    const startVal = parseInt(startYear as string) * 100 + parseInt(startMonth as string);
-    const endVal = parseInt(endYear as string) * 100 + parseInt(endMonth as string);
+    // 1. Parse dates to ensure they cover the full days (start of day to end of day)
+    const start = new Date(startDate as string);
+    start.setUTCHours(0, 0, 0, 0);
 
-    // Fetch Monthly Summaries within range
-    // We use $expr to create a comparable value on the fly for filtering
-    const monthlyReports = await MonthlySummary.find({
-      $expr: {
-        $and: [
-          {
-            $gte: [
-              { $add: [{ $multiply: ["$year", 100] }, "$month"] },
-              startVal,
-            ],
-          },
-          {
-            $lte: [
-              { $add: [{ $multiply: ["$year", 100] }, "$month"] },
-              endVal,
-            ],
-          },
-        ],
+    let end = new Date(endDate as string);
+end = new Date(end.setDate(end.getDate() + 1));
+
+    // Calculate exact number of days requested (inclusive)
+    const msPerDay = 1000 * 60 * 60 * 24;
+    const cumulativeTotalDays = Math.floor((end.getTime() - start.getTime()) / msPerDay) + 1;
+
+    // 2. Fetch Exact Range Summary using Aggregation on DailyReport
+    const dailyAggregation = await DailyReport.aggregate([
+      {
+        $match: {
+          date: { $gte: start, $lte: end },
+        },
       },
-    })
-      .sort({ year: 1, month: 1 }) // Return in chronological order
-      .lean();
+      {
+        $group: {
+          _id: null,
+          totalRoomSold: { $sum: "$roomSold" },
+          totalRoomRevenue: { $sum: "$roomRevenue" },
+          totalRestaurantSale: { $sum: "$restaurantSale" },
+          totalMealPlanSale: { $sum: "$mealPlanSale" },
+          totalBarSale: { $sum: "$barSale" },
+          totalCld: { $sum: "$cld" },
+          totalCake: { $sum: "$cake" },
+          totalExpense: { $sum: "$expense" },
+          totalCashDeposit: { $sum: "$cashDeposit" },
+          totalPettyCash: { $sum: "$pettyCash" },
+          totalMonthRevenue: { $sum: "$totalRevenue" },
+          totalUpiDeposit: { $sum: "$upiDeposit" },
+          totalCashReceived: { $sum: "$cashReceived" },
+          totalAdult: { $sum: "$totalAdultPax" },
+          totalChild: { $sum: "$totalChildPax" },
+          totalSpa: { $sum: "$spaSale" }, // Mapped new field
+          reportsFound: { $sum: 1 }, // Just to see how many days were actually entered
+        },
+      },
+    ]);
 
-    // Initialize the Combined Summary Object
-    const combinedSummary = {
-      startDate: `${startMonth}/${startYear}`,
-      endDate: `${endMonth}/${endYear}`,
-      monthsFound: monthlyReports.length,
+    // Extract the aggregated data (fallback to 0s if no reports found)
+    const aggResult = dailyAggregation[0] || {
       totalRoomSold: 0,
       totalRoomRevenue: 0,
       totalRestaurantSale: 0,
@@ -197,66 +193,60 @@ router.get("/custom-range-summary", async (req, res): Promise<any> => {
       totalCashReceived: 0,
       totalAdult: 0,
       totalChild: 0,
-      // Averages (Calculated at the end)
-      arr: 0,
-      avgOccupancy: 0,
-      revPerRoom: 0,
+      totalSpa: 0,
+      reportsFound: 0,
     };
 
-    // Helper to get days in a specific month (for precise occupancy calc)
-    const getDaysInMonth = (y: number, m: number) => new Date(y, m, 0).getDate();
-    const totalAvailableRooms = Number(process.env.TOTAL_ROOMS) || 56; // Fallback to 56 if env missing
-    let cumulativeTotalDays = 0;
-
-    // Aggregate Data
-    monthlyReports.forEach((report) => {
-      combinedSummary.totalRoomSold += report.totalRoomSold || 0;
-      combinedSummary.totalRoomRevenue += report.totalRoomRevenue || 0;
-      combinedSummary.totalRestaurantSale += report.totalRestaurantSale || 0;
-      combinedSummary.totalMealPlanSale += report.totalMealPlanSale || 0;
-      combinedSummary.totalBarSale += report.totalBarSale || 0;
-      combinedSummary.totalCld += report.totalCld || 0;
-      combinedSummary.totalCake += report.totalCake || 0;
-      combinedSummary.totalExpense += report.totalExpense || 0;
-      combinedSummary.totalCashDeposit += report.totalCashDeposit || 0;
-      combinedSummary.totalPettyCash += report.totalPettyCash || 0;
-      combinedSummary.totalMonthRevenue += report.totalMonthRevenue || 0;
-      combinedSummary.totalUpiDeposit += report.totalUpiDeposit || 0;
-      combinedSummary.totalCashReceived += report.totalCashReceived || 0;
-      combinedSummary.totalAdult += report.totalAdult || 0;
-      combinedSummary.totalChild += report.totalChild || 0;
-
-      // Calculate days in this specific month for weighted averages
-      cumulativeTotalDays += getDaysInMonth(report.year, report.month);
-    });
-
-    // --- Perform Precise Average Calculations ---
-
-    // 1. ARR = Total Room Revenue / Total Rooms Sold
-    if (combinedSummary.totalRoomSold > 0) {
-      combinedSummary.arr = +(
-        combinedSummary.totalRoomRevenue / combinedSummary.totalRoomSold
-      ).toFixed(2);
-    }
-
-    // 2. Occupancy % = (Total Rooms Sold * 100) / (Total Inventory * Total Days)
+    // 3. Perform Precise Average Calculations
+    const totalAvailableRooms = Number(process.env.TOTAL_ROOMS) || 56;
     const totalInventoryOverPeriod = totalAvailableRooms * cumulativeTotalDays;
-    if (totalInventoryOverPeriod > 0) {
-      combinedSummary.avgOccupancy = +(
-        (combinedSummary.totalRoomSold * 100) /
-        totalInventoryOverPeriod
-      ).toFixed(2);
 
-    // 3. RevPerRoom = Total Room Revenue / (Total Inventory * Total Days)
-      combinedSummary.revPerRoom = +(
-        combinedSummary.totalRoomRevenue / totalInventoryOverPeriod
-      ).toFixed(2);
+    let arr = 0;
+    let avgOccupancy = 0;
+    let revPerRoom = 0;
+
+    if (aggResult.totalRoomSold > 0) {
+      arr = +(aggResult.totalRoomRevenue / aggResult.totalRoomSold).toFixed(2);
     }
 
-    // Return the result
+    if (totalInventoryOverPeriod > 0) {
+      avgOccupancy = +((aggResult.totalRoomSold * 100) / totalInventoryOverPeriod).toFixed(2);
+      revPerRoom = +(aggResult.totalRoomRevenue / totalInventoryOverPeriod).toFixed(2);
+    }
+
+    // Construct the final combined summary object
+    const combinedSummary = {
+      startDate: start.toISOString().split("T")[0],
+      endDate: end.toISOString().split("T")[0],
+      daysInDateRange: cumulativeTotalDays,
+      reportsFound: aggResult.reportsFound,
+      ...aggResult,
+      arr,
+      avgOccupancy,
+      revPerRoom,
+    };
+    delete combinedSummary._id; // clean up MongoDB _id from the spread
+
+    // 4. Fetch the Monthly Summary array for the frontend (Previous Style)
+    // Calculate the integer values for $expr filtering (YYYYMM)
+    const startVal = start.getFullYear() * 100 + (start.getMonth() + 1);
+    const endVal = end.getFullYear() * 100 + (end.getMonth() + 1);
+
+    const monthlyReports = await MonthlySummary.find({
+      $expr: {
+        $and: [
+          { $gte: [{ $add: [{ $multiply: ["$year", 100] }, "$month"] }, startVal] },
+          { $lte: [{ $add: [{ $multiply: ["$year", 100] }, "$month"] }, endVal] },
+        ],
+      },
+    })
+      .sort({ year: 1, month: 1 })
+      .lean();
+
+    // 5. Return Response
     res.status(200).json({
       combinedSummary,
-      monthlyReports, // The individual month breakdowns
+      monthlyReports,
     });
   } catch (error) {
     console.error("Error fetching custom range report:", error);
@@ -267,7 +257,6 @@ router.get("/custom-range-summary", async (req, res): Promise<any> => {
   }
 });
 
-
 router.get("/report-on/:year/:month/:day", async (req, res) => {
   await dbConnect();
   const { year, month, day } = req.params;
@@ -276,14 +265,13 @@ router.get("/report-on/:year/:month/:day", async (req, res) => {
     const report = await DailyReport.findOne({ year, month, day });
     if (!report) {
       res.status(404).json({ message: "Report not found" });
-      return 
+      return;
     }
     res.json(report);
   } catch (error) {
-    res.status(500).json({ message: "Server Error", error});
+    res.status(500).json({ message: "Server Error", error });
   }
 });
-
 
 router.put("/edit-report/:year/:month/:day", async (req, res) => {
   const { year, month, day } = req.params;
@@ -325,11 +313,9 @@ router.put("/edit-report/:year/:month/:day", async (req, res) => {
       month: +month,
     });
     if (!monthlySummary) {
-      res
-        .status(404)
-        .json({
-          message: "Monthly summary not found for the given month and year.",
-        });
+      res.status(404).json({
+        message: "Monthly summary not found for the given month and year.",
+      });
       return;
     }
 
@@ -377,29 +363,25 @@ router.put("/edit-report/:year/:month/:day", async (req, res) => {
     monthlySummary.avgRoomPerDay = monthlySummary.totalRoomSold / daysCount;
     monthlySummary.avgOccupancy =
       (monthlySummary.totalRoomSold * 100) / (totalAvailableRooms * daysCount);
-    monthlySummary.arr = 
-  monthlySummary.totalRoomSold > 0
-    ? monthlySummary.totalRoomRevenue / monthlySummary.totalRoomSold
-    : 0;
+    monthlySummary.arr =
+      monthlySummary.totalRoomSold > 0
+        ? monthlySummary.totalRoomRevenue / monthlySummary.totalRoomSold
+        : 0;
 
     monthlySummary.revPerRoom =
       monthlySummary.totalRoomRevenue / (totalAvailableRooms * daysCount);
 
     await monthlySummary.save();
 
-    res
-      .status(200)
-      .json({
-        message: "Daily report and monthly summary updated successfully.",
-      });
+    res.status(200).json({
+      message: "Daily report and monthly summary updated successfully.",
+    });
   } catch (error) {
     console.error("Error updating report:", error);
-    res
-      .status(500)
-      .json({
-        error: "Internal Server Error",
-        details: (error as Error).message,
-      });
+    res.status(500).json({
+      error: "Internal Server Error",
+      details: (error as Error).message,
+    });
   }
 });
 
