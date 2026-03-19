@@ -275,9 +275,9 @@ router.get("/report-on/:year/:month/:day", async (req, res) => {
 
 router.put("/edit-report/:year/:month/:day", async (req, res) => {
   const { year, month, day } = req.params;
-  const newData = req.body;
-  const secretPassword = req.body.secretPassword; // secret password in the body
+  const { secretPassword, newYear, newMonth, newDay, ...newData } = req.body;
 
+  // 1. Auth check
   if (secretPassword !== process.env.ALTER_VALUES_PASSWORD) {
     res.status(400).json({ message: "Wrong alter password" });
     return;
@@ -285,97 +285,175 @@ router.put("/edit-report/:year/:month/:day", async (req, res) => {
 
   try {
     await dbConnect();
-    // Find the existing daily report by date (year, month, day)
+
+    // 2. Find the existing report at the OLD date
     const existingReport = await DailyReport.findOne({
       year: +year,
       month: +month,
       day: +day,
     });
+
     if (!existingReport) {
-      res
-        .status(404)
-        .json({ message: "Daily report not found for the given date." });
+      res.status(404).json({ message: "Daily report not found for the given date." });
       return;
     }
 
-    // Store old values for difference calculation
+    // 3. Determine if the date is actually changing
+    const targetYear  = newYear  ? +newYear  : +year;
+    const targetMonth = newMonth ? +newMonth : +month;
+    const targetDay   = newDay   ? +newDay   : +day;
+
+    const isDateChanging =
+      targetYear !== +year ||
+      targetMonth !== +month ||
+      targetDay !== +day;
+
+    // 4. If date is changing, check no report already exists at the new date
+    if (isDateChanging) {
+      const conflict = await DailyReport.findOne({
+        year: targetYear,
+        month: targetMonth,
+        day: targetDay,
+      });
+
+      if (conflict) {
+        res.status(409).json({
+          message: `A report already exists for ${targetDay}/${targetMonth}/${targetYear}. Cannot move report to this date.`,
+        });
+        return;
+      }
+    }
+
+    // 5. Store old values before any changes
     const prevReport = existingReport.toObject();
 
-    // Update the report fields with new data
-    Object.assign(existingReport, newData);
+    // 6. Apply new data cleanly (strip null/undefined)
+    const cleanData = Object.fromEntries(
+      Object.entries(newData).filter(([_, v]) => v !== null && v !== undefined)
+    );
+    Object.assign(existingReport, cleanData);
 
-    // Save updated daily report
-    await existingReport.save();
-
-    // Find the monthly summary for the given month and year
-    const monthlySummary = await MonthlySummary.findOne({
-      year: +year,
-      month: +month,
-    });
-    if (!monthlySummary) {
-      res.status(404).json({
-        message: "Monthly summary not found for the given month and year.",
-      });
-      return;
+    // 7. Apply new date if changing
+    if (isDateChanging) {
+      existingReport.day   = targetDay;
+      existingReport.month = targetMonth;
+      existingReport.year  = targetYear;
+      existingReport.date  = new Date(targetYear, targetMonth - 1, targetDay);
     }
+
+    await existingReport.save();
 
     const totalAvailableRooms = Number(process.env.TOTAL_ROOMS) || 1;
 
-    // Calculate differences between new and previous report values
-    const diffRoomSold = (newData.roomSold || 0) - (prevReport.roomSold || 0);
-    const diffRoomRevenue =
-      (newData.roomRevenue || 0) - (prevReport.roomRevenue || 0);
-    const diffRestaurantSale =
-      (newData.restaurantSale || 0) - (prevReport.restaurantSale || 0);
-    const diffMealPlanSale =
-      (newData.mealPlanSale || 0) - (prevReport.mealPlanSale || 0);
-    const diffBarSale = (newData.barSale || 0) - (prevReport.barSale || 0);
-    const diffCld = (newData.cld || 0) - (prevReport.cld || 0);
-    const diffCake = (newData.cake || 0) - (prevReport.cake || 0);
-    const diffExpense = (newData.expense || 0) - (prevReport.expense || 0);
-    const diffCashDeposit =
-      (newData.cashDeposit || 0) - (prevReport.cashDeposit || 0);
-    const diffPettyCash =
-      (newData.pettyCash || 0) - (prevReport.pettyCash || 0);
-    const diffTotalRevenue =
-      (newData.totalRevenue || 0) - (prevReport.totalRevenue || 0);
+    // -------------------------------------------------------
+    // 8. MONTHLY SUMMARY LOGIC
+    // -------------------------------------------------------
 
-    // Number of daily reports (daysCount) for this month and year - needed for averages
-    const daysCount = await DailyReport.countDocuments({
-      month: +month,
-      year: +year,
-    });
+    const isSameMonth = targetYear === +year && targetMonth === +month;
 
-    // Update monthly summary totals according to differences
-    monthlySummary.totalRoomSold += diffRoomSold;
-    monthlySummary.totalRoomRevenue += diffRoomRevenue;
-    monthlySummary.totalRestaurantSale += diffRestaurantSale;
-    monthlySummary.totalMealPlanSale += diffMealPlanSale;
-    monthlySummary.totalBarSale += diffBarSale;
-    monthlySummary.totalCld += diffCld;
-    monthlySummary.totalCake += diffCake;
-    monthlySummary.totalExpense += diffExpense;
-    monthlySummary.totalCashDeposit += diffCashDeposit;
-    monthlySummary.totalPettyCash += diffPettyCash;
-    monthlySummary.totalMonthRevenue += diffTotalRevenue;
+    if (isSameMonth) {
+      // ── Same month: just apply diffs as before ──────────────
 
-    // Recalculate averages and ratios
-    monthlySummary.avgRoomPerDay = monthlySummary.totalRoomSold / daysCount;
-    monthlySummary.avgOccupancy =
-      (monthlySummary.totalRoomSold * 100) / (totalAvailableRooms * daysCount);
-    monthlySummary.arr =
-      monthlySummary.totalRoomSold > 0
-        ? monthlySummary.totalRoomRevenue / monthlySummary.totalRoomSold
-        : 0;
+      const monthlySummary = await MonthlySummary.findOne({
+        year: +year,
+        month: +month,
+      });
 
-    monthlySummary.revPerRoom =
-      monthlySummary.totalRoomRevenue / (totalAvailableRooms * daysCount);
+      if (!monthlySummary) {
+        res.status(404).json({ message: "Monthly summary not found." });
+        return;
+      }
 
-    await monthlySummary.save();
+      const daysCount = await DailyReport.countDocuments({
+        month: +month,
+        year: +year,
+      });
+
+      applyDiffs(monthlySummary, existingReport, prevReport);
+      recalculateAverages(monthlySummary, totalAvailableRooms, daysCount);
+
+      await monthlySummary.save();
+
+    } else {
+      // ── Date moved to a different month ─────────────────────
+      // A) Subtract old report values from OLD monthly summary
+      // B) Add new report values to NEW monthly summary (create if needed)
+
+      // A) OLD monthly summary — subtract the old report entirely
+      const oldMonthlySummary = await MonthlySummary.findOne({
+        year: +year,
+        month: +month,
+      });
+
+      if (!oldMonthlySummary) {
+        res.status(404).json({ message: "Old monthly summary not found." });
+        return;
+      }
+
+      subtractReport(oldMonthlySummary, prevReport);
+
+      const oldDaysCount = await DailyReport.countDocuments({
+        month: +month,
+        year: +year,
+      });
+
+      if (oldDaysCount === 0) {
+        // No more reports in this month — delete the summary or zero it out
+        await oldMonthlySummary.deleteOne();
+      } else {
+        recalculateAverages(oldMonthlySummary, totalAvailableRooms, oldDaysCount);
+        await oldMonthlySummary.save();
+      }
+
+      // B) NEW monthly summary — add the updated report values
+      const newDaysCount = await DailyReport.countDocuments({
+        month: targetMonth,
+        year: targetYear,
+      });
+
+      let newMonthlySummary = await MonthlySummary.findOne({
+        year: targetYear,
+        month: targetMonth,
+      });
+
+      if (newMonthlySummary) {
+        addReport(newMonthlySummary, existingReport);
+        recalculateAverages(newMonthlySummary, totalAvailableRooms, newDaysCount);
+        await newMonthlySummary.save();
+      } else {
+        // No summary exists for target month yet — create one
+        newMonthlySummary = new MonthlySummary({
+          month: targetMonth,
+          year: targetYear,
+          totalRoomSold:       existingReport.roomSold,
+          totalRoomRevenue:    existingReport.roomRevenue,
+          totalRestaurantSale: existingReport.restaurantSale,
+          totalMealPlanSale:   existingReport.mealPlanSale,
+          totalBarSale:        existingReport.barSale,
+          totalSpa:            existingReport.spaSale,
+          totalCld:            existingReport.cld,
+          totalCake:           existingReport.cake,
+          totalExpense:        existingReport.expense,
+          totalCashDeposit:    existingReport.cashDeposit,
+          totalPettyCash:      existingReport.pettyCash,
+          totalMonthRevenue:   existingReport.totalRevenue,
+          totalUpiDeposit:     existingReport.upiDeposit,
+          totalCashReceived:   existingReport.cashReceived,
+          totalAdult:          existingReport.totalAdultPax,
+          totalChild:          existingReport.totalChildPax,
+          avgRoomPerDay: existingReport.roomSold / newDaysCount,
+          avgOccupancy: (existingReport.roomSold * 100) / (totalAvailableRooms * newDaysCount),
+          arr: existingReport.roomSold > 0 ? existingReport.roomRevenue / existingReport.roomSold : 0,
+          revPerRoom: existingReport.roomRevenue / (totalAvailableRooms * newDaysCount),
+        });
+        await newMonthlySummary.save();
+      }
+    }
 
     res.status(200).json({
       message: "Daily report and monthly summary updated successfully.",
     });
+
   } catch (error) {
     console.error("Error updating report:", error);
     res.status(500).json({
@@ -384,5 +462,74 @@ router.put("/edit-report/:year/:month/:day", async (req, res) => {
     });
   }
 });
+
+// Apply diffs from updated report vs previous report
+function applyDiffs(summary: any, updated: any, prev: any) {
+  summary.totalRoomSold       += (updated.roomSold       || 0) - (prev.roomSold       || 0);
+  summary.totalRoomRevenue    += (updated.roomRevenue    || 0) - (prev.roomRevenue    || 0);
+  summary.totalRestaurantSale += (updated.restaurantSale || 0) - (prev.restaurantSale || 0);
+  summary.totalMealPlanSale   += (updated.mealPlanSale   || 0) - (prev.mealPlanSale   || 0);
+  summary.totalBarSale        += (updated.barSale        || 0) - (prev.barSale        || 0);
+  summary.totalSpa            += (updated.spaSale        || 0) - (prev.spaSale        || 0);
+  summary.totalCld            += (updated.cld            || 0) - (prev.cld            || 0);
+  summary.totalCake           += (updated.cake           || 0) - (prev.cake           || 0);
+  summary.totalExpense        += (updated.expense        || 0) - (prev.expense        || 0);
+  summary.totalCashDeposit    += (updated.cashDeposit    || 0) - (prev.cashDeposit    || 0);
+  summary.totalPettyCash      += (updated.pettyCash      || 0) - (prev.pettyCash      || 0);
+  summary.totalMonthRevenue   += (updated.totalRevenue   || 0) - (prev.totalRevenue   || 0);
+  summary.totalUpiDeposit     += (updated.upiDeposit     || 0) - (prev.upiDeposit     || 0);
+  summary.totalCashReceived   += (updated.cashReceived   || 0) - (prev.cashReceived   || 0);
+  summary.totalAdult          += (updated.totalAdultPax  || 0) - (prev.totalAdultPax  || 0);
+  summary.totalChild          += (updated.totalChildPax  || 0) - (prev.totalChildPax  || 0);
+}
+
+// Subtract an entire report from a summary (when moving OUT of a month)
+function subtractReport(summary: any, report: any) {
+  summary.totalRoomSold       -= (report.roomSold       || 0);
+  summary.totalRoomRevenue    -= (report.roomRevenue    || 0);
+  summary.totalRestaurantSale -= (report.restaurantSale || 0);
+  summary.totalMealPlanSale   -= (report.mealPlanSale   || 0);
+  summary.totalBarSale        -= (report.barSale        || 0);
+  summary.totalSpa            -= (report.spaSale        || 0);
+  summary.totalCld            -= (report.cld            || 0);
+  summary.totalCake           -= (report.cake           || 0);
+  summary.totalExpense        -= (report.expense        || 0);
+  summary.totalCashDeposit    -= (report.cashDeposit    || 0);
+  summary.totalPettyCash      -= (report.pettyCash      || 0);
+  summary.totalMonthRevenue   -= (report.totalRevenue   || 0);
+  summary.totalUpiDeposit     -= (report.upiDeposit     || 0);
+  summary.totalCashReceived   -= (report.cashReceived   || 0);
+  summary.totalAdult          -= (report.totalAdultPax  || 0);
+  summary.totalChild          -= (report.totalChildPax  || 0);
+}
+
+// Add an entire report to a summary (when moving INTO a month)
+function addReport(summary: any, report: any) {
+  summary.totalRoomSold       += (report.roomSold       || 0);
+  summary.totalRoomRevenue    += (report.roomRevenue    || 0);
+  summary.totalRestaurantSale += (report.restaurantSale || 0);
+  summary.totalMealPlanSale   += (report.mealPlanSale   || 0);
+  summary.totalBarSale        += (report.barSale        || 0);
+  summary.totalSpa            += (report.spaSale        || 0);
+  summary.totalCld            += (report.cld            || 0);
+  summary.totalCake           += (report.cake           || 0);
+  summary.totalExpense        += (report.expense        || 0);
+  summary.totalCashDeposit    += (report.cashDeposit    || 0);
+  summary.totalPettyCash      += (report.pettyCash      || 0);
+  summary.totalMonthRevenue   += (report.totalRevenue   || 0);
+  summary.totalUpiDeposit     += (report.upiDeposit     || 0);
+  summary.totalCashReceived   += (report.cashReceived   || 0);
+  summary.totalAdult          += (report.totalAdultPax  || 0);
+  summary.totalChild          += (report.totalChildPax  || 0);
+}
+
+// Recalculate averages/ratios
+function recalculateAverages(summary: any, totalRooms: number, daysCount: number) {
+  summary.avgRoomPerDay = summary.totalRoomSold / daysCount;
+  summary.avgOccupancy  = (summary.totalRoomSold * 100) / (totalRooms * daysCount);
+  summary.arr           = summary.totalRoomSold > 0
+    ? summary.totalRoomRevenue / summary.totalRoomSold : 0;
+  summary.revPerRoom    = summary.totalRoomRevenue / (totalRooms * daysCount);
+}
 
 export default router;
